@@ -1,40 +1,60 @@
-# Training.py
 import torch
+import torch.optim as optim
+# import dataloader
 from torch.utils.data import DataLoader
-from Model import VAE, vae_loss
-from Dataloader import TextDataset
+from model import StyleTransferModel, vae_loss  # Import model and loss function
+from dataloader import TextDataset, collate_fn, build_vocab  # Import dataset and collate function
 
-# Parameters
-vocab_size = 10000
+# Hyperparameters
+num_epochs = 10
+learning_rate = 0.001
+target_confidence = 0.8  # Desired style confidence for counterfactual adjustment
+
+# Initialize model, optimizer, and data loader
+vocab_size = 10000  # Example vocabulary size
 embed_dim = 300
 hidden_dim = 256
 style_dim = 16
 content_dim = 128
-epochs = 10
-batch_size = 16
-learning_rate = 1e-3
 
-# Sample vocabulary and data (replace this with actual data loading)
-vocab = {'<PAD>': 0, '<UNK>': 1, 'example': 2, 'text': 3}  # Simplified vocab example
-texts = ["example text", "another example text"]  # Replace with actual data
-
-# Data loading
-dataset = TextDataset(texts, vocab)
-data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+# Assuming data_dir points to the location of your dataset
+data_dir = "./data/sentiment_style_transfer/yelp"
+vocab = build_vocab(data_dir)  # Build vocabulary
+dataset = TextDataset(data_dir, vocab)  # Initialize dataset
+data_loader = DataLoader(dataset, batch_size=32, collate_fn=collate_fn, shuffle=True)  # Initialize DataLoader
 
 # Initialize model and optimizer
-model = VAE(vocab_size, embed_dim, hidden_dim, style_dim, content_dim)
-optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = StyleTransferModel(vocab_size, embed_dim, hidden_dim, style_dim, content_dim).to(device)
+optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
 # Training loop
-for epoch in range(epochs):
+for epoch in range(num_epochs):
     model.train()
-    total_loss = 0
-    for x in data_loader:
+    epoch_loss = 0
+    
+    for batch_idx, (input_tokens, labels, lengths) in enumerate(data_loader):
+        # Move inputs to device (if using GPU)
+        input_tokens = input_tokens.to(device)
+        labels = labels.to(device)
+
+        # Reset gradients
         optimizer.zero_grad()
-        x_reconstructed, style_mean, style_logvar, content_mean, content_logvar = model(x)
-        loss = vae_loss(x_reconstructed, x, style_mean, style_logvar, content_mean, content_logvar)
+        
+        # Forward pass through VAE with counterfactual adjustment
+        x_reconstructed, style_mean, content_mean, s_prime = model(input_tokens, target_confidence=target_confidence)
+        
+        # Calculate VAE loss (reconstruction + KL divergence)
+        style_logvar = torch.zeros_like(style_mean)  # Assuming style_logvar is zero-initialized for simplicity
+        content_logvar = torch.zeros_like(content_mean)
+        loss = vae_loss(x_reconstructed, input_tokens, style_mean, style_logvar, content_mean, content_logvar)
+        
+        # Backward pass and optimization step
         loss.backward()
         optimizer.step()
-        total_loss += loss.item()
-    print(f"Epoch {epoch + 1}, Loss: {total_loss / len(data_loader)}")
+        
+        # Accumulate loss for monitoring
+        epoch_loss += loss.item()
+    
+    # Logging epoch loss
+    print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {epoch_loss / len(data_loader)}")
